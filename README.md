@@ -13,7 +13,12 @@ The analysis slides continued as follows
 ![image](https://github.com/HenriRhodes/Prism-Plus-A-B-Analysis/assets/146751862/1e568721-808b-4d5a-b78f-acf5ecf50f28)
 
 
-![image](https://github.com/HenriRhodes/Prism-Plus-A-B-Analysis/assets/146751862/f8dec4d1-2295-4af9-be06-1d152c1ae441)
+![image](https://github.com/HenriRhodes/Prism-Plus-A-B-Analysis/assets/146751862/3c8d3892-1e5a-4d86-8782-6ad909ea14fe)
+
+
+![image](https://github.com/HenriRhodes/Prism-Plus-A-B-Analysis/assets/146751862/466187c2-93ee-43bd-869f-4d2c8e81e0a0)
+
+
 
 
 
