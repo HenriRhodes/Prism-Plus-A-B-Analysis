@@ -1,0 +1,213 @@
+Here is some of the SQL I wrote in BigQuery to extract insights. 
+Some of which i didn't end up using due to time constraints, for example the RFM Customer Segmentation would need more time than 2 days in order to balance buckets. 
+
+
+--Get only control and test
+WITH users_ab_group AS (
+  SELECT 	
+  user_crm_id
+  ,CASE
+    WHEN prism_plus_status THEN 'Test' 
+    ELSE 'Control' END AS ab_group
+  ,tiers.calculated_tier AS tier
+  FROM `Prism_Main_Live.users` as u
+  LEFT JOIN (SELECT 
+  user_crm_id,
+    CASE 
+      WHEN COUNT(*) = 1 THEN 'Bronze'
+      WHEN COUNT(*) = 2 THEN 'Silver'
+      WHEN COUNT(*) = 3 THEN 'Gold'
+      WHEN COUNT(*) > 3 THEN 'Platinum'
+      ELSE 'ERROR'END AS calculated_tier
+  FROM `Prism_Main_Live.transactions`
+  WHERE date < '2022-01-01'
+  GROUP BY user_crm_id) AS tiers
+  USING (user_crm_id)
+  WHERE opt_in_status = true AND first_purchase_date < '2022-01-01'
+)
+
+/*--Gross revenue metric
+SELECT 
+  t.date
+  ,ab.ab_group
+  ,ab.tier 
+  ,ROUND(SUM(t.transaction_total),2) as gross_revenue
+FROM `Prism_Main_Live.transactions` as t
+INNER JOIN users_ab_group as ab
+USING(user_crm_id)
+GROUP BY  t.date
+  ,ab.ab_group
+  ,ab.tier */
+
+/*-- NSM annual orders per customer 
+SELECT
+date 
+,ab_group
+,tier
+,COUNT(transaction_id) as transaction_count
+FROM `Prism_Main_Live.transactions` as t
+INNER JOIN users_ab_group 
+USING(user_crm_id)
+GROUP BY date
+,ab_group
+,tier*/
+
+/*
+-- Conversion Rate 
+,converted_sessions as (
+SELECT
+s.date as date
+,s.user_crm_id as user_crm_id
+,s.session_id as session_id
+,CASE 
+  WHEN transaction_id IS NULL THEN 0
+  ELSE 1 END AS sessions_converted
+FROM `Prism_Main_Live.sessions` as s
+LEFT JOIN `Prism_Main_Live.transactions` as t
+USING(session_id)
+INNER JOIN users_ab_group as ab
+ON s.user_crm_id = ab.user_crm_id
+)
+
+SELECT 
+c.date
+,SUM(c.sessions_converted) as sessions_converted
+,COUNT(c.session_id) as total_sessions
+,SUM(c.sessions_converted)/COUNT(c.session_id) as conversion_rate
+,ab.ab_group
+,ab.tier
+FROM converted_sessions AS c
+INNER JOIN users_ab_group AS ab
+USING(user_crm_id)
+GROUP BY date
+,ab.ab_group
+,ab.tier 
+*/
+
+--RFM
+
+-- R most recent purchase split by median of frequency of latest_purchase_date 
+--Recency, Median date = 2021-08-11
+--,recency_segment AS (
+/*SELECT 
+ab.user_crm_id
+,ab.ab_group
+,ab.tier
+,CASE 
+  WHEN MAX(t.date) < '2021-08-11' THEN 'old'
+  ELSE 'recent' END AS recency_segment
+FROM `Prism_Main_Live.transactions` as t
+INNER JOIN users_ab_group as ab
+USING(user_crm_id)
+GROUP BY ab.user_crm_id
+,ab.ab_group
+,ab.tier*/
+--)
+
+-- M is constituted through range of gross revenue generated
+/*--Gross revenue segment
+SELECT 
+  t.date
+  ,ab.ab_group
+  ,ab.tier 
+  ,ROUND(SUM(t.transaction_total),2) as gross_revenue
+FROM `Prism_Main_Live.transactions` as t
+INNER JOIN users_ab_group as ab
+USING(user_crm_id)
+GROUP BY  t.date
+  ,ab.ab_group
+  ,ab.tier */
+-- F is constituted through Frequency of purchase per given timeline
+
+
+--Profitability of AB
+
+/* Splits out customers into cohorts
+customers are placed in the month cohort of their first purchase */
+,cohort_month AS(
+  SELECT 
+    user_cookie_id AS customer_id,
+    MIN(DATE_TRUNC(date, MONTH)) as cohort_month
+  FROM `prism-2023-c3.Prism_Main_Live.transactions`
+  GROUP BY customer_id
+)
+-- counts the number of customers in each cohort.
+,count_of_customers_by_cohort AS(
+  SELECT
+    cohort_month.cohort_month AS cohort_month,
+    COUNT(DISTINCT customer_id) AS customer_count
+  FROM cohort_month
+  GROUP BY cohort_month
+  ORDER BY cohort_month
+)
+--calculates the cost of item clusters.
+,item_cost AS (
+  SELECT 
+    transaction_id,
+    item_id,
+    SUM(cost_of_item*item_quantity) AS item_costs
+  FROM `prism-2023-c3.Prism_Main_Live.transactionsanditems`
+  JOIN `prism-2023-c3.Prism_Main_Live.product_costs`
+  USING(item_id)
+  GROUP BY transaction_id, item_id
+)
+-- calculates the total cost of items in each transaction
+,transaction_cost AS(
+  SELECT
+    transaction_id,
+    SUM(item_costs)+5.35 AS transaction_costs
+  FROM item_cost
+  GROUP BY transaction_id
+)
+-- calculates the revenue 'lost' from returns by item
+,returned_item AS (
+  SELECT 
+    t.transaction_id,
+    t.item_id,
+    SUM(item_price*return_quantity) AS returned_items
+  FROM `prism-2023-c3.Prism_Main_Live.product_returns` p
+  LEFT JOIN `prism-2023-c3.Prism_Main_Live.transactionsanditems` t
+  ON p.transaction_id = t.transaction_id
+  AND p.item_id = t.item_id
+  WHERE return_status = 'Refund'
+  GROUP BY t.transaction_id, t.item_id
+)
+-- brings lost revenue from returns together by transaction.
+,returned_transactions AS(
+  SELECT
+    transaction_id,
+    SUM(returned_items) AS returned_revenue
+  FROM returned_item
+  GROUP BY transaction_id
+)
+-- combines revenue with returns, factoring in coupon codes.
+-- This should be the final revenue number.
+,revenue_minus_returns AS (
+  SELECT
+    tm.date,
+    user_crm_id,
+    tm.transaction_id,
+    CASE WHEN returned_revenue IS NULL THEN transaction_total
+        WHEN transaction_coupon IS NULL THEN (transaction_total-returned_revenue)
+        ELSE (transaction_total-(returned_revenue*(CAST(RIGHT(transaction_coupon,2) AS INT64)-100)/100)) END AS complete_transaction_revenue,
+  FROM `prism-2023-c3.Prism_Main_Live.transactions` tm
+  LEFT JOIN returned_transactions rt
+  USING(transaction_id)
+)
+
+
+-- Gives the gross profit per transaction
+ --,profit_per_transaction AS(
+  SELECT
+    date
+    ,ab_group
+    ,tier
+    ,SUM(complete_transaction_revenue-transaction_costs) AS transaction_profit
+  FROM revenue_minus_returns
+  LEFT JOIN transaction_cost
+  USING(transaction_id)
+  INNER JOIN users_ab_group
+  USING(user_crm_id)
+  GROUP BY date, ab_group
+    ,tier
+  --)
